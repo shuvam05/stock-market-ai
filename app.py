@@ -14,6 +14,9 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 from reportlab.lib import colors
 
 
+# -----------------------------
+# PATHS
+# -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "model" / "stock_model.pkl"
 YFINANCE_CACHE_DIR = BASE_DIR / ".yfinance_cache"
@@ -150,8 +153,7 @@ interval_seconds = {
 }
 
 seconds = interval_seconds[interval]
-elapsed = now.timestamp() % seconds
-remaining = seconds - elapsed
+remaining = seconds - (now.timestamp() % seconds)
 
 mins = int(remaining // 60)
 secs = int(remaining % 60)
@@ -159,22 +161,14 @@ secs = int(remaining % 60)
 st.sidebar.info(f"⏱ Next candle in: {mins:02d}:{secs:02d}")
 
 # -----------------------------
-# PERIOD LOGIC
+# PERIOD
 # -----------------------------
-if interval in ["1m", "15m", "60m"]:
-    period = "7d"
-else:
-    period = "1y"
+period = "7d" if interval in ["1m", "15m", "60m"] else "1y"
 
 # -----------------------------
-# FETCH DATA
+# FETCH STOCK
 # -----------------------------
-df = yf.download(
-    ticker,
-    period=period,
-    interval=interval,
-    progress=False,
-)
+df = yf.download(ticker, period=period, interval=interval, progress=False)
 
 if df.empty:
     st.error("No data found.")
@@ -185,7 +179,7 @@ df.reset_index(inplace=True)
 df = normalize_date_column(df)
 
 # -----------------------------
-# MARKET INDEX DATA
+# NIFTY + BANKNIFTY
 # -----------------------------
 nifty = download_market_index("^NSEI", "NIFTY_Close", "NIFTY_Return", period, interval)
 banknifty = download_market_index(
@@ -200,14 +194,11 @@ df = pd.merge(df, nifty, on="Date", how="left")
 df = pd.merge(df, banknifty, on="Date", how="left")
 
 # -----------------------------
-# NUMERIC
+# INDICATORS
 # -----------------------------
 for col in ["Open", "High", "Low", "Close", "Volume"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# -----------------------------
-# INDICATORS
-# -----------------------------
 df["SMA_10"] = df["Close"].rolling(10).mean()
 df["SMA_50"] = df["Close"].rolling(50).mean()
 
@@ -223,11 +214,7 @@ df["RSI"] = 100 - (100 / (1 + rs))
 ema12 = df["Close"].ewm(span=12, adjust=False).mean()
 ema26 = df["Close"].ewm(span=26, adjust=False).mean()
 df["MACD"] = ema12 - ema26
-
-df["BB_Mid"] = df["Close"].rolling(20).mean()
-std = df["Close"].rolling(20).std()
-df["BB_Upper"] = df["BB_Mid"] + 2 * std
-df["BB_Lower"] = df["BB_Mid"] - 2 * std
+df["Signal_Line"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
 df["Close_Lag1"] = df["Close"].shift(1)
 df["Close_Lag2"] = df["Close"].shift(2)
@@ -260,7 +247,6 @@ if missing_features:
 
 latest_features = df[list(model.feature_names_in_)].tail(1)
 prediction = model.predict(latest_features)[0]
-
 action = "BUY 🟢" if prediction == 1 else "SELL 🔴"
 
 # -----------------------------
@@ -272,6 +258,7 @@ chart_df.loc[chart_df["SMA_10"] < chart_df["SMA_50"], "Signal"] = -1
 
 buy = chart_df[chart_df["Signal"] == 1]
 sell = chart_df[chart_df["Signal"] == -1]
+
 
 # -----------------------------
 # PDF REPORT FUNCTION
@@ -339,7 +326,7 @@ st.download_button(
 )
 
 # -----------------------------
-# CHART
+# MAIN CHART
 # -----------------------------
 fig = go.Figure()
 
@@ -402,6 +389,49 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------
+# RSI
+# -----------------------------
+st.subheader("RSI")
+
+rsi_fig = go.Figure()
+
+rsi_fig.add_trace(go.Scatter(
+    x=chart_df["Date"],
+    y=chart_df["RSI"],
+    name="RSI",
+))
+
+rsi_fig.add_hline(y=70)
+rsi_fig.add_hline(y=30)
+
+rsi_fig.update_layout(height=250, template="plotly_dark")
+
+st.plotly_chart(rsi_fig, use_container_width=True)
+
+# -----------------------------
+# MACD
+# -----------------------------
+st.subheader("MACD")
+
+macd_fig = go.Figure()
+
+macd_fig.add_trace(go.Scatter(
+    x=chart_df["Date"],
+    y=chart_df["MACD"],
+    name="MACD",
+))
+
+macd_fig.add_trace(go.Scatter(
+    x=chart_df["Date"],
+    y=chart_df["Signal_Line"],
+    name="Signal Line",
+))
+
+macd_fig.update_layout(height=250, template="plotly_dark")
+
+st.plotly_chart(macd_fig, use_container_width=True)
 
 # -----------------------------
 # DATA TABLE
